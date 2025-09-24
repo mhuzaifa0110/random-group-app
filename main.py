@@ -34,6 +34,14 @@ CREATE TABLE IF NOT EXISTS groups (
     members TEXT
 )
 """)
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+)
+""")
+cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('registration_open', '1')")
 conn.commit()
 
 class RegisterUser(BaseModel):
@@ -82,6 +90,8 @@ def home():
                         <h2>Controller Panel</h2>
                         <input type="text" id="groupTitle" placeholder="Enter Group Title">
                         <button onclick="makeGroups()">Make Groups</button>
+                        <br><br>
+                        <button onclick="toggleRegistration()">Open/Close Registrations</button>
                     </div>
 
                     <h2>Groups</h2>
@@ -98,6 +108,21 @@ def home():
                     data.forEach(u => {
                         let li = document.createElement('li');
                         li.innerText = u.name + " (" + u.reg_no + ") - prefers group of " + u.group_size;
+                        
+                        // Delete button for controller
+                        if (sessionStorage.getItem("isController") === "true") {
+                            let btn = document.createElement('button');
+                            btn.innerText = "Delete";
+                            btn.style.marginLeft = "10px";
+                            btn.onclick = async () => {
+                                let res = await fetch('/delete_user/' + u.reg_no, { method: 'DELETE' });
+                                let msg = await res.json();
+                                alert(msg.message || msg.detail);
+                                fetchUsers();
+                            };
+                            li.appendChild(btn);
+                        }
+
                         list.appendChild(li);
                     });
                 }
@@ -136,6 +161,7 @@ def home():
 
                     if (reg_no === "98100") {
                         document.getElementById('controllerPanel').style.display = 'block';
+                        sessionStorage.setItem("isController", "true");
                     }
 
                     fetchUsers();
@@ -161,6 +187,12 @@ def home():
                     fetchGroups();
                 }
 
+                async function toggleRegistration() {
+                    let res = await fetch('/toggle_registration', { method: 'POST' });
+                    let msg = await res.json();
+                    alert(msg.message);
+                }
+
                 // Load users and groups on page start
                 fetchUsers();
                 fetchGroups();
@@ -174,6 +206,12 @@ def register_user(data: RegisterUser):
     # Prevent controller from being registered
     if data.name.lower() == "controller" and data.reg_no == "98100":
         raise HTTPException(status_code=400, detail="Controller cannot be registered as a user")
+
+    # Check if registration open
+    cursor.execute("SELECT value FROM settings WHERE key='registration_open'")
+    reg_open = cursor.fetchone()[0]
+    if reg_open != "1":
+        raise HTTPException(status_code=403, detail="Registration is currently closed")
 
     try:
         cursor.execute("INSERT INTO users (name, reg_no, group_size) VALUES (?, ?, ?)", 
@@ -194,26 +232,32 @@ def list_users():
 
 @app.delete("/delete_user/{reg_no}")
 def delete_user(reg_no: str):
-    # Only controller can delete
     if reg_no == "98100":
         raise HTTPException(status_code=400, detail="Controller cannot be deleted")
-
     cursor.execute("DELETE FROM users WHERE reg_no = ?", (reg_no,))
     conn.commit()
     return {"message": f"User with reg_no {reg_no} deleted successfully"}
+
+@app.post("/toggle_registration")
+def toggle_registration():
+    cursor.execute("SELECT value FROM settings WHERE key='registration_open'")
+    current = cursor.fetchone()[0]
+    new_value = "0" if current == "1" else "1"
+    cursor.execute("UPDATE settings SET value=? WHERE key='registration_open'", (new_value,))
+    conn.commit()
+    status = "opened" if new_value == "1" else "closed"
+    return {"message": f"Registration has been {status}"}
 
 @app.post("/make_groups")
 def make_groups(req: GroupRequest):
     if not req.title:
         raise HTTPException(status_code=400, detail="Title is required")
 
-    # Get users with their names + reg_no
     cursor.execute("SELECT name, reg_no, group_size FROM users")
     users = cursor.fetchall()
     if not users:
         raise HTTPException(status_code=400, detail="No users registered")
 
-    # Use majority preferred group size
     sizes = [u[2] for u in users]
     size = max(set(sizes), key=sizes.count) if sizes else req.size
 
@@ -241,9 +285,7 @@ def make_groups(req: GroupRequest):
                 cursor.execute("SELECT name FROM users WHERE reg_no=?", (reg,))
                 name = cursor.fetchone()[0]
                 display_group.append(f"{name} ({reg})")
-
             groups.append(display_group)
-
             for j in range(len(group)):
                 for k in range(j+1, len(group)):
                     cursor.execute("INSERT INTO past_pairs (user1, user2) VALUES (?, ?)", (group[j], group[k]))
@@ -254,7 +296,6 @@ def make_groups(req: GroupRequest):
             groups = []
             i = 0
 
-    # Save or update groups in DB
     cursor.execute("DELETE FROM groups WHERE title=?", (req.title,))
     for idx, g in enumerate(groups, start=1):
         cursor.execute("INSERT INTO groups (title, group_no, members) VALUES (?, ?, ?)", 
