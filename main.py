@@ -5,6 +5,11 @@ import sqlite3
 
 app = FastAPI()
 
+# Root endpoint (homepage)
+@app.get("/")
+def home():
+    return {"message": "Random Group App is running. Go to /docs to try the API."}
+
 # Database setup
 conn = sqlite3.connect("groups.db", check_same_thread=False)
 cursor = conn.cursor()
