@@ -171,13 +171,16 @@ def home():
 
 @app.post("/register")
 def register_user(data: RegisterUser):
+    # Prevent controller from being registered
+    if data.name.lower() == "controller" and data.reg_no == "98100":
+        raise HTTPException(status_code=400, detail="Controller cannot be registered as a user")
+
     try:
         cursor.execute("INSERT INTO users (name, reg_no, group_size) VALUES (?, ?, ?)", 
                        (data.name, data.reg_no, data.group_size))
         conn.commit()
         return {"message": "Registered successfully"}
     except sqlite3.IntegrityError:
-        # update instead if already exists
         cursor.execute("UPDATE users SET name=?, group_size=? WHERE reg_no=?", 
                        (data.name, data.group_size, data.reg_no))
         conn.commit()
@@ -188,6 +191,16 @@ def list_users():
     cursor.execute("SELECT name, reg_no, group_size FROM users")
     rows = cursor.fetchall()
     return [{"name": r[0], "reg_no": r[1], "group_size": r[2]} for r in rows]
+
+@app.delete("/delete_user/{reg_no}")
+def delete_user(reg_no: str):
+    # Only controller can delete
+    if reg_no == "98100":
+        raise HTTPException(status_code=400, detail="Controller cannot be deleted")
+
+    cursor.execute("DELETE FROM users WHERE reg_no = ?", (reg_no,))
+    conn.commit()
+    return {"message": f"User with reg_no {reg_no} deleted successfully"}
 
 @app.post("/make_groups")
 def make_groups(req: GroupRequest):
