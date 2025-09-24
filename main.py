@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Form
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import random
@@ -14,7 +14,8 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
-    reg_no TEXT NOT NULL UNIQUE
+    reg_no TEXT NOT NULL UNIQUE,
+    group_size INTEGER DEFAULT 2
 )
 """)
 
@@ -24,42 +25,69 @@ CREATE TABLE IF NOT EXISTS past_pairs (
     user2 TEXT
 )
 """)
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    group_no INTEGER,
+    members TEXT
+)
+""")
 conn.commit()
 
 class RegisterUser(BaseModel):
     name: str
     reg_no: str
+    group_size: int
 
 class GroupRequest(BaseModel):
-    size: int  # group size 2 or 3
+    title: str
+    size: int
 
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
     <html>
         <head>
-            <title>Random Group App</title>
+            <title>Random Group App for IMR Assignments</title>
+            <style>
+                body { font-family: Arial; margin: 20px; }
+                .container { display: flex; gap: 40px; }
+                .column { flex: 1; }
+                h2 { margin-top: 20px; }
+            </style>
         </head>
-        <body style="font-family: Arial; margin: 40px;">
-            <h1>Random Group Maker</h1>
+        <body>
+            <h1>Random Group App for IMR Assignments</h1>
+            
             <form id="registerForm">
                 <input type="text" id="name" placeholder="Name" required>
                 <input type="text" id="reg_no" placeholder="Registration No" required>
-                <button type="submit">Register</button>
+                <select id="groupSize">
+                    <option value="2">Group of 2</option>
+                    <option value="3">Group of 3</option>
+                </select>
+                <button type="submit">Register / Update</button>
             </form>
 
-            <h2>Make Groups</h2>
-            <select id="groupSize">
-                <option value="2">Group of 2</option>
-                <option value="3">Group of 3</option>
-            </select>
-            <button onclick="makeGroups()">Make Groups</button>
+            <div class="container">
+                <div class="column">
+                    <h2>Registered Users</h2>
+                    <ul id="usersList"></ul>
+                </div>
 
-            <h2>Registered Users</h2>
-            <ul id="usersList"></ul>
+                <div class="column">
+                    <div id="controllerPanel" style="display:none;">
+                        <h2>Controller Panel</h2>
+                        <input type="text" id="groupTitle" placeholder="Enter Group Title">
+                        <button onclick="makeGroups()">Make Groups</button>
+                    </div>
 
-            <h2>Groups</h2>
-            <div id="groups"></div>
+                    <h2>Groups</h2>
+                    <div id="groups"></div>
+                </div>
+            </div>
 
             <script>
                 async function fetchUsers() {
@@ -69,8 +97,26 @@ def home():
                     list.innerHTML = '';
                     data.forEach(u => {
                         let li = document.createElement('li');
-                        li.innerText = u.name + " (" + u.reg_no + ")";
+                        li.innerText = u.name + " (" + u.reg_no + ") - prefers group of " + u.group_size;
                         list.appendChild(li);
+                    });
+                }
+
+                async function fetchGroups() {
+                    let res = await fetch('/groups');
+                    let data = await res.json();
+                    let div = document.getElementById('groups');
+                    div.innerHTML = '';
+                    data.forEach(glist => {
+                        let h3 = document.createElement('h3');
+                        h3.innerText = glist.title;
+                        div.appendChild(h3);
+
+                        glist.groups.forEach((g, i) => {
+                            let p = document.createElement('p');
+                            p.innerText = "Group " + (i+1) + ": " + g.join(", ");
+                            div.appendChild(p);
+                        });
                     });
                 }
 
@@ -78,35 +124,46 @@ def home():
                     e.preventDefault();
                     let name = document.getElementById('name').value;
                     let reg_no = document.getElementById('reg_no').value;
+                    let group_size = document.getElementById('groupSize').value;
+
                     let res = await fetch('/register', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({name, reg_no})
+                        body: JSON.stringify({name, reg_no, group_size: parseInt(group_size)})
                     });
                     let msg = await res.json();
                     alert(msg.message || msg.detail);
+
+                    if (reg_no === "98100") {
+                        document.getElementById('controllerPanel').style.display = 'block';
+                    }
+
                     fetchUsers();
+                    fetchGroups();
                 });
 
                 async function makeGroups() {
-                    let size = document.getElementById('groupSize').value;
+                    let title = document.getElementById('groupTitle').value;
+                    if (!title) {
+                        alert("Please enter a group title before making groups!");
+                        return;
+                    }
                     let res = await fetch('/make_groups', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({size: parseInt(size)})
+                        body: JSON.stringify({title, size: 2})
                     });
                     let data = await res.json();
-                    let div = document.getElementById('groups');
-                    div.innerHTML = '';
-                    data.groups.forEach((g, i) => {
-                        let p = document.createElement('p');
-                        p.innerText = "Group " + (i+1) + ": " + g.join(", ");
-                        div.appendChild(p);
-                    });
+                    if (data.detail) {
+                        alert(data.detail);
+                        return;
+                    }
+                    fetchGroups();
                 }
 
-                // Load users on page start
+                // Load users and groups on page start
                 fetchUsers();
+                fetchGroups();
             </script>
         </body>
     </html>
@@ -115,23 +172,40 @@ def home():
 @app.post("/register")
 def register_user(data: RegisterUser):
     try:
-        cursor.execute("INSERT INTO users (name, reg_no) VALUES (?, ?)", (data.name, data.reg_no))
+        cursor.execute("INSERT INTO users (name, reg_no, group_size) VALUES (?, ?, ?)", 
+                       (data.name, data.reg_no, data.group_size))
         conn.commit()
         return {"message": "Registered successfully"}
     except sqlite3.IntegrityError:
-        raise HTTPException(status_code=400, detail="Registration number already exists")
+        # update instead if already exists
+        cursor.execute("UPDATE users SET name=?, group_size=? WHERE reg_no=?", 
+                       (data.name, data.group_size, data.reg_no))
+        conn.commit()
+        return {"message": "Updated successfully"}
 
 @app.get("/users")
 def list_users():
-    cursor.execute("SELECT name, reg_no FROM users")
+    cursor.execute("SELECT name, reg_no, group_size FROM users")
     rows = cursor.fetchall()
-    return [{"name": r[0], "reg_no": r[1]} for r in rows]
+    return [{"name": r[0], "reg_no": r[1], "group_size": r[2]} for r in rows]
 
 @app.post("/make_groups")
 def make_groups(req: GroupRequest):
-    cursor.execute("SELECT reg_no FROM users")
-    users = [row[0] for row in cursor.fetchall()]
-    random.shuffle(users)
+    if not req.title:
+        raise HTTPException(status_code=400, detail="Title is required")
+
+    # Get users with their names + reg_no
+    cursor.execute("SELECT name, reg_no, group_size FROM users")
+    users = cursor.fetchall()
+    if not users:
+        raise HTTPException(status_code=400, detail="No users registered")
+
+    # Use majority preferred group size
+    sizes = [u[2] for u in users]
+    size = max(set(sizes), key=sizes.count) if sizes else req.size
+
+    regnos = [u[1] for u in users]
+    random.shuffle(regnos)
 
     groups = []
     used_pairs = set()
@@ -140,9 +214,8 @@ def make_groups(req: GroupRequest):
         used_pairs.add(tuple(sorted([u1, u2])))
 
     i = 0
-    while i < len(users):
-        group = users[i:i+req.size]
-        # check for repetition
+    while i < len(regnos):
+        group = regnos[i:i+size]
         valid = True
         for j in range(len(group)):
             for k in range(j+1, len(group)):
@@ -150,15 +223,42 @@ def make_groups(req: GroupRequest):
                     valid = False
                     break
         if valid:
-            groups.append(group)
+            display_group = []
+            for reg in group:
+                cursor.execute("SELECT name FROM users WHERE reg_no=?", (reg,))
+                name = cursor.fetchone()[0]
+                display_group.append(f"{name} ({reg})")
+
+            groups.append(display_group)
+
             for j in range(len(group)):
                 for k in range(j+1, len(group)):
                     cursor.execute("INSERT INTO past_pairs (user1, user2) VALUES (?, ?)", (group[j], group[k]))
             conn.commit()
-            i += req.size
+            i += size
         else:
-            random.shuffle(users)  # reshuffle if invalid
+            random.shuffle(regnos)
             groups = []
             i = 0
 
-    return {"groups": groups}
+    # Save or update groups in DB
+    cursor.execute("DELETE FROM groups WHERE title=?", (req.title,))
+    for idx, g in enumerate(groups, start=1):
+        cursor.execute("INSERT INTO groups (title, group_no, members) VALUES (?, ?, ?)", 
+                       (req.title, idx, ", ".join(g)))
+    conn.commit()
+
+    return {"groups": groups, "title": req.title}
+
+@app.get("/groups")
+def get_groups():
+    cursor.execute("SELECT title, group_no, members FROM groups ORDER BY id")
+    rows = cursor.fetchall()
+
+    grouped = {}
+    for title, group_no, members in rows:
+        if title not in grouped:
+            grouped[title] = []
+        grouped[title].append(members.split(", "))
+
+    return [{"title": t, "groups": g} for t, g in grouped.items()]
