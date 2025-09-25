@@ -4,6 +4,16 @@ from pydantic import BaseModel
 from google.cloud import firestore
 import random
 import os
+import os, base64
+
+# 🔑 Decode the Firebase key from environment variable on Render
+if "FIREBASE_KEY_BASE64" in os.environ:
+    with open("firebase-key.json", "wb") as f:
+        f.write(base64.b64decode(os.environ["FIREBASE_KEY_BASE64"]))
+
+# ✅ Point Google SDK to the created file
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "firebase-key.json"
+
 
 # Initialize Firebase
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "firebase-key.json"
