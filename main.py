@@ -1,49 +1,17 @@
-from fastapi import FastAPI, HTTPException, Form
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from google.cloud import firestore
 import random
-import sqlite3
+import os
+
+# Initialize Firebase
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "firebase-key.json"
+db = firestore.Client()
 
 app = FastAPI()
 
-# Database setup
-conn = sqlite3.connect("groups.db", check_same_thread=False)
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    reg_no TEXT NOT NULL UNIQUE,
-    group_size INTEGER DEFAULT 2
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS past_pairs (
-    user1 TEXT,
-    user2 TEXT
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS groups (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    group_no INTEGER,
-    members TEXT
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT
-)
-""")
-cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('registration_open', '1')")
-conn.commit()
-
+# ---------- MODELS ----------
 class RegisterUser(BaseModel):
     name: str
     reg_no: str
@@ -53,266 +21,126 @@ class GroupRequest(BaseModel):
     title: str
     size: int
 
+# ---------- FIREBASE HELPERS ----------
+def get_setting(key: str):
+    doc = db.collection("settings").document(key).get()
+    if doc.exists:
+        return doc.to_dict().get("value")
+    return None
+
+def set_setting(key: str, value: str):
+    db.collection("settings").document(key).set({"value": value})
+
+# Initialize settings on first run
+if get_setting("registration_open") is None:
+    set_setting("registration_open", "1")
+
+# ---------- HTML UI ----------
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return """
-    <html>
-        <head>
-            <title>Random Group App for IMR Assignments</title>
-            <style>
-                body { font-family: Arial; margin: 20px; }
-                .container { display: flex; gap: 40px; }
-                .column { flex: 1; }
-                h2 { margin-top: 20px; }
-            </style>
-        </head>
-        <body>
-            <h1>Random Group App for IMR Assignments</h1>
-            
-            <form id="registerForm">
-                <input type="text" id="name" placeholder="Name" required>
-                <input type="text" id="reg_no" placeholder="Registration No" required>
-                <select id="groupSize">
-                    <option value="2">Group of 2</option>
-                    <option value="3">Group of 3</option>
-                </select>
-                <button type="submit">Register / Update</button>
-            </form>
+    return open("index.html").read()
 
-            <div class="container">
-                <div class="column">
-                    <h2>Registered Users</h2>
-                    <ul id="usersList"></ul>
-                </div>
-
-                <div class="column">
-                    <div id="controllerPanel" style="display:none;">
-                        <h2>Controller Panel</h2>
-                        <input type="text" id="groupTitle" placeholder="Enter Group Title">
-                        <button onclick="makeGroups()">Make Groups</button>
-                        <br><br>
-                        <button onclick="toggleRegistration()">Open/Close Registrations</button>
-                    </div>
-
-                    <h2>Groups</h2>
-                    <div id="groups"></div>
-                </div>
-            </div>
-
-            <script>
-                async function fetchUsers() {
-                    let res = await fetch('/users');
-                    let data = await res.json();
-                    let list = document.getElementById('usersList');
-                    list.innerHTML = '';
-                    data.forEach(u => {
-                        let li = document.createElement('li');
-                        li.innerText = u.name + " (" + u.reg_no + ") - prefers group of " + u.group_size;
-                        
-                        // Delete button for controller
-                        if (sessionStorage.getItem("isController") === "true") {
-                            let btn = document.createElement('button');
-                            btn.innerText = "Delete";
-                            btn.style.marginLeft = "10px";
-                            btn.onclick = async () => {
-                                let res = await fetch('/delete_user/' + u.reg_no, { method: 'DELETE' });
-                                let msg = await res.json();
-                                alert(msg.message || msg.detail);
-                                fetchUsers();
-                            };
-                            li.appendChild(btn);
-                        }
-
-                        list.appendChild(li);
-                    });
-                }
-
-                async function fetchGroups() {
-                    let res = await fetch('/groups');
-                    let data = await res.json();
-                    let div = document.getElementById('groups');
-                    div.innerHTML = '';
-                    data.forEach(glist => {
-                        let h3 = document.createElement('h3');
-                        h3.innerText = glist.title;
-                        div.appendChild(h3);
-
-                        glist.groups.forEach((g, i) => {
-                            let p = document.createElement('p');
-                            p.innerText = "Group " + (i+1) + ": " + g.join(", ");
-                            div.appendChild(p);
-                        });
-                    });
-                }
-
-                document.getElementById('registerForm').addEventListener('submit', async (e) => {
-                    e.preventDefault();
-                    let name = document.getElementById('name').value;
-                    let reg_no = document.getElementById('reg_no').value;
-                    let group_size = document.getElementById('groupSize').value;
-
-                    let res = await fetch('/register', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({name, reg_no, group_size: parseInt(group_size)})
-                    });
-                    let msg = await res.json();
-                    alert(msg.message || msg.detail);
-
-                    if (reg_no === "98100") {
-                        document.getElementById('controllerPanel').style.display = 'block';
-                        sessionStorage.setItem("isController", "true");
-                    }
-
-                    fetchUsers();
-                    fetchGroups();
-                });
-
-                async function makeGroups() {
-                    let title = document.getElementById('groupTitle').value;
-                    if (!title) {
-                        alert("Please enter a group title before making groups!");
-                        return;
-                    }
-                    let res = await fetch('/make_groups', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({title, size: 2})
-                    });
-                    let data = await res.json();
-                    if (data.detail) {
-                        alert(data.detail);
-                        return;
-                    }
-                    fetchGroups();
-                }
-
-                async function toggleRegistration() {
-                    let res = await fetch('/toggle_registration', { method: 'POST' });
-                    let msg = await res.json();
-                    alert(msg.message);
-                }
-
-                // Load users and groups on page start
-                fetchUsers();
-                fetchGroups();
-            </script>
-        </body>
-    </html>
-    """
-
+# ---------- REGISTER USER ----------
 @app.post("/register")
 def register_user(data: RegisterUser):
-    # Prevent controller from being registered
     if data.name.lower() == "controller" and data.reg_no == "98100":
         raise HTTPException(status_code=400, detail="Controller cannot be registered as a user")
 
-    # Check if registration open
-    cursor.execute("SELECT value FROM settings WHERE key='registration_open'")
-    reg_open = cursor.fetchone()[0]
-    if reg_open != "1":
+    if get_setting("registration_open") != "1":
         raise HTTPException(status_code=403, detail="Registration is currently closed")
 
-    try:
-        cursor.execute("INSERT INTO users (name, reg_no, group_size) VALUES (?, ?, ?)", 
-                       (data.name, data.reg_no, data.group_size))
-        conn.commit()
-        return {"message": "Registered successfully"}
-    except sqlite3.IntegrityError:
-        cursor.execute("UPDATE users SET name=?, group_size=? WHERE reg_no=?", 
-                       (data.name, data.group_size, data.reg_no))
-        conn.commit()
+    doc_ref = db.collection("users").document(data.reg_no)
+    if doc_ref.get().exists:
+        doc_ref.update({"name": data.name, "group_size": data.group_size})
         return {"message": "Updated successfully"}
+    else:
+        doc_ref.set({"name": data.name, "reg_no": data.reg_no, "group_size": data.group_size})
+        return {"message": "Registered successfully"}
 
+# ---------- LIST USERS ----------
 @app.get("/users")
 def list_users():
-    cursor.execute("SELECT name, reg_no, group_size FROM users")
-    rows = cursor.fetchall()
-    return [{"name": r[0], "reg_no": r[1], "group_size": r[2]} for r in rows]
+    users = db.collection("users").stream()
+    return [u.to_dict() for u in users]
 
+# ---------- DELETE USER ----------
 @app.delete("/delete_user/{reg_no}")
 def delete_user(reg_no: str):
     if reg_no == "98100":
         raise HTTPException(status_code=400, detail="Controller cannot be deleted")
-    cursor.execute("DELETE FROM users WHERE reg_no = ?", (reg_no,))
-    conn.commit()
+
+    db.collection("users").document(reg_no).delete()
     return {"message": f"User with reg_no {reg_no} deleted successfully"}
 
+# ---------- TOGGLE REGISTRATION ----------
 @app.post("/toggle_registration")
 def toggle_registration():
-    cursor.execute("SELECT value FROM settings WHERE key='registration_open'")
-    current = cursor.fetchone()[0]
+    current = get_setting("registration_open")
     new_value = "0" if current == "1" else "1"
-    cursor.execute("UPDATE settings SET value=? WHERE key='registration_open'", (new_value,))
-    conn.commit()
+    set_setting("registration_open", new_value)
     status = "opened" if new_value == "1" else "closed"
     return {"message": f"Registration has been {status}"}
 
+# ---------- MAKE GROUPS ----------
 @app.post("/make_groups")
 def make_groups(req: GroupRequest):
     if not req.title:
         raise HTTPException(status_code=400, detail="Title is required")
 
-    cursor.execute("SELECT name, reg_no, group_size FROM users")
-    users = cursor.fetchall()
+    users_ref = db.collection("users").stream()
+    users = [u.to_dict() for u in users_ref]
     if not users:
         raise HTTPException(status_code=400, detail="No users registered")
 
-    sizes = [u[2] for u in users]
+    sizes = [u["group_size"] for u in users]
     size = max(set(sizes), key=sizes.count) if sizes else req.size
 
-    regnos = [u[1] for u in users]
+    regnos = [u["reg_no"] for u in users]
     random.shuffle(regnos)
 
-    groups = []
-    used_pairs = set()
-    cursor.execute("SELECT user1, user2 FROM past_pairs")
-    for u1, u2 in cursor.fetchall():
-        used_pairs.add(tuple(sorted([u1, u2])))
+    past_pairs_ref = db.collection("past_pairs").stream()
+    used_pairs = set(tuple(sorted([p.to_dict()["user1"], p.to_dict()["user2"]])) for p in past_pairs_ref)
 
+    groups = []
     i = 0
     while i < len(regnos):
         group = regnos[i:i+size]
-        valid = True
-        for j in range(len(group)):
-            for k in range(j+1, len(group)):
-                if tuple(sorted([group[j], group[k]])) in used_pairs:
-                    valid = False
-                    break
+        valid = all(tuple(sorted([group[j], group[k]])) not in used_pairs for j in range(len(group)) for k in range(j+1, len(group)))
         if valid:
             display_group = []
             for reg in group:
-                cursor.execute("SELECT name FROM users WHERE reg_no=?", (reg,))
-                name = cursor.fetchone()[0]
+                name = db.collection("users").document(reg).get().to_dict()["name"]
                 display_group.append(f"{name} ({reg})")
             groups.append(display_group)
             for j in range(len(group)):
                 for k in range(j+1, len(group)):
-                    cursor.execute("INSERT INTO past_pairs (user1, user2) VALUES (?, ?)", (group[j], group[k]))
-            conn.commit()
+                    db.collection("past_pairs").add({"user1": group[j], "user2": group[k]})
             i += size
         else:
             random.shuffle(regnos)
             groups = []
             i = 0
 
-    cursor.execute("DELETE FROM groups WHERE title=?", (req.title,))
+    # Clear old groups of same title
+    groups_query = db.collection("groups").where("title", "==", req.title).stream()
+    for g in groups_query:
+        g.reference.delete()
+
     for idx, g in enumerate(groups, start=1):
-        cursor.execute("INSERT INTO groups (title, group_no, members) VALUES (?, ?, ?)", 
-                       (req.title, idx, ", ".join(g)))
-    conn.commit()
+        db.collection("groups").add({
+            "title": req.title,
+            "group_no": idx,
+            "members": g
+        })
 
     return {"groups": groups, "title": req.title}
 
+# ---------- GET GROUPS ----------
 @app.get("/groups")
 def get_groups():
-    cursor.execute("SELECT title, group_no, members FROM groups ORDER BY id")
-    rows = cursor.fetchall()
-
+    groups_ref = db.collection("groups").stream()
     grouped = {}
-    for title, group_no, members in rows:
-        if title not in grouped:
-            grouped[title] = []
-        grouped[title].append(members.split(", "))
-
+    for g in groups_ref:
+        d = g.to_dict()
+        grouped.setdefault(d["title"], []).append(d["members"])
     return [{"title": t, "groups": g} for t, g in grouped.items()]
